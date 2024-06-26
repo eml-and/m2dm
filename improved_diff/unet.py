@@ -71,7 +71,11 @@ class Upsample(nn.Module):
                 x, (x.shape[2], x.shape[3] * 2, x.shape[4] * 2), mode="nearest"
             )
         else:
-            x = F.interpolate(x, scale_factor=2, mode="nearest")
+            # this is a fix for image_size = 36
+            if x.shape[-1] == 5:
+                x = F.interpolate(x, size=9)
+            else:
+                x = F.interpolate(x, scale_factor=2, mode="nearest")
         if self.use_conv:
             x = self.conv(x)
         return x
@@ -484,7 +488,10 @@ class UNetModel(nn.Module):
             hs.append(h)
         h = self.middle_block(h, emb)
         for module in self.output_blocks:
-            cat_in = th.cat([h, hs.pop()], dim=1)
+            try:
+                cat_in = th.cat([h, hs.pop()], dim=1)
+            except RuntimeError:
+                breakpoint()
             h = module(cat_in, emb)
         h = h.type(x.dtype)
         return self.out(h)

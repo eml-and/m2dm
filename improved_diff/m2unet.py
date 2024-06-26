@@ -20,19 +20,9 @@ from improved_diff.nn import (
     timestep_embedding,
     zero_module,
 )
-from improved_diff.script_util import (
-    add_dict_to_argparser,
-    args_to_dict,
-    create_model_and_diffusion,
-    model_and_diffusion_defaults,
-)
-from improved_diff.train_util import TrainLoop
-
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-from src.image_train import create_argparser
 
 
-def blockdiag_matmul(x, w):
+def blockdiag_matmul(x, weights):
     """
     x is expected to be of shape [..., sqrt_n * sqrt_n]
     w is expected to be of shape [sqrt_n, sqrt_n, sqrt_n]
@@ -43,8 +33,12 @@ def blockdiag_matmul(x, w):
     Reshape the result back to the original shape of x
     return result.reshape(*x.shape)
     """
+    if not x.shape[-1] == weights.shape[0]**2:
+        breakpoint()
     return th.einsum(
-        "bnm,...bm ->... bn", w, x.view(*x.shape[:-1], w.shape[0], w.shape[-1])
+        "bnm,...bm ->... bn",
+        weights,
+        x.view(*x.shape[:-1], weights.shape[0], weights.shape[-1]),
     ).reshape(*x.shape)
 
 
@@ -190,9 +184,20 @@ class MonarchGatedConv(nn.Module):
     TODO: ablation of LayerNorm is necessary
     """
 
-    def __init__(self, sqrt_n: int, sqrt_d: int, res: bool):
+    def __init__(
+        self,
+        sqrt_n: int,
+        sqrt_d: int,
+        res: bool,
+        channels: int,
+        num_heads: int = 1,
+        use_checkpoint: bool = False,
+    ):
         super().__init__()
         self.res = res
+        self.channels = channels
+        self.num_heads = num_heads
+        self.use_checkpoint = use_checkpoint
         self.q = MonarchLinear(sqrt_d=sqrt_d)
         self.k = MonarchLinear(sqrt_d=sqrt_d)
         self.v = MonarchLinear(sqrt_d=sqrt_d)
@@ -202,16 +207,28 @@ class MonarchGatedConv(nn.Module):
 
         self.d_kernel = nn.Parameter(th.randn(1, sqrt_d**2))
         self.d_kernel_bi = nn.Parameter(th.randn(1, sqrt_d**2))
+        self.norm = normalization(channels)
+        self.proj_out = zero_module(conv_nd(1, channels, channels, 1))
 
     def forward(self, x):
+        return checkpoint(self._forward, (x,), self.parameters(), self.use_checkpoint)
+
+    def _forward(self, x):
+        shape = x.shape
+        x = th.cat(self.num_heads * [x], dim=1)
         Q = self.q(x)
         K = self.k(x)
         V = self.v(x)
         h = V * self.m2(self.d_kernel * self.m1(Q * K))
         if not self.res:
+            h = self.proj_out(h)
+            assert h.shape == shape
             return h
         else:
             x_res = self.m9(self.d_kernel * self.m8(x))
+            # TODO: add norm
+            h = self.proj_out(h)
+            assert x_res.shape == h.shape
         return x_res + h
 
 
@@ -297,6 +314,39 @@ class Downsample(nn.Module):
     def forward(self, x):
         assert x.shape[1] == self.channels
         return self.op(x)
+    
+
+class Downsample_(nn.Module):
+    """
+    Convolutional downsampler (1 & 2) to maintain M2 dimensions.
+
+    :param channels: channels in the inputs and outputs.
+    :param use_conv: a bool determining if a convolution is applied.
+    :param dims: determines if the signal is 1D, 2D, or 3D. If 3D, then
+                 downsampling occurs in the inner-two dimensions.
+    """
+
+    def __init__(self, channels, use_conv, level: int, dims=2):
+        super().__init__()
+        if level < 2:
+            self.padding = 8
+        else:
+            self.padding = 2
+        self.channels = channels
+        self.use_conv = use_conv
+        self.dims = dims
+        stride = 2 if dims != 3 else (1, 2, 2)
+        if use_conv:
+            self.op = conv_nd(dims, channels, channels, 3, stride=stride, padding=self.padding)
+        else:
+            self.op = avg_pool_nd(stride)
+
+    def forward(self, x):
+        assert x.shape[1] == self.channels
+        return self.op(x)
+
+
+
 
 
 class ResBlock(TimestepBlock):
@@ -471,9 +521,9 @@ class QKVAttention(nn.Module):
         model.total_ops += th.DoubleTensor([matmul_ops])
 
 
-class M2UNetModel(nn.Module):
+class MU2NetModel(nn.Module):
     """
-    The full M2UNet model with attention and timestep embedding.
+    The full MU2Net model with attention and timestep embedding.
 
     :param in_channels: channels in the input Tensor.
     :param model_channels: base channel count for the model.
@@ -496,6 +546,7 @@ class M2UNetModel(nn.Module):
 
     def __init__(
         self,
+        image_size,
         in_channels,
         model_channels,
         out_channels,
@@ -528,6 +579,7 @@ class M2UNetModel(nn.Module):
         self.use_checkpoint = use_checkpoint
         self.num_heads = num_heads
         self.num_heads_upsample = num_heads_upsample
+        self.sqrt_n = self.sqrt_d = int(math.sqrt(image_size))
 
         time_embed_dim = model_channels * 4
         self.time_embed = nn.Sequential(
@@ -565,15 +617,20 @@ class M2UNetModel(nn.Module):
                 ch = mult * model_channels
                 if ds in attention_resolutions:
                     layers.append(
-                        AttentionBlock(
-                            ch, use_checkpoint=use_checkpoint, num_heads=num_heads
+                        MonarchGatedConv(
+                            sqrt_d=self.sqrt_d,
+                            sqrt_n=self.sqrt_n,
+                            res=True,
+                            channels=ch,
+                            use_checkpoint=use_checkpoint,
+                            num_heads=num_heads,
                         )
                     )
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
                 input_block_chans.append(ch)
             if level != len(channel_mult) - 1:
                 self.input_blocks.append(
-                    TimestepEmbedSequential(Downsample(ch, conv_resample, dims=dims))
+                    TimestepEmbedSequential(Downsample_(ch, conv_resample, dims=dims, level=level))
                 )
                 input_block_chans.append(ch)
                 ds *= 2
@@ -587,7 +644,14 @@ class M2UNetModel(nn.Module):
                 use_checkpoint=use_checkpoint,
                 use_scale_shift_norm=use_scale_shift_norm,
             ),
-            AttentionBlock(ch, use_checkpoint=use_checkpoint, num_heads=num_heads),
+            MonarchGatedConv(
+                sqrt_d=self.sqrt_d,
+                sqrt_n=self.sqrt_n,
+                res=True,
+                channels=ch,
+                use_checkpoint=use_checkpoint,
+                num_heads=num_heads,
+            ),
             ResBlock(
                 ch,
                 time_embed_dim,
@@ -615,10 +679,13 @@ class M2UNetModel(nn.Module):
                 ch = model_channels * mult
                 if ds in attention_resolutions:
                     layers.append(
-                        AttentionBlock(
-                            ch,
+                        MonarchGatedConv(
+                            sqrt_d=self.sqrt_d,
+                            sqrt_n=self.sqrt_n,
+                            res=True,
+                            channels=ch,
                             use_checkpoint=use_checkpoint,
-                            num_heads=num_heads_upsample,
+                            num_heads=num_heads,
                         )
                     )
                 if level and i == num_res_blocks:
@@ -778,8 +845,15 @@ def main():
         MonarchMixerLayer(5, 5),
         MonarchMixerLayer(4, 4),
     )
-    print(count_parameters(model_ResBlock))  # 542464
-    print(count_parameters(model_MML))
+    # print(count_parameters(model_ResBlock))  # 542464
+    # print(count_parameters(model_MML))
+
+    # TODO: MGC similarly to attention
+    model_MGC = nn.Sequential(
+        MonarchGatedConv(),
+        MonarchGatedConv(),
+        MonarchGatedConv(),
+    )
 
 
 if __name__ == "__main__":

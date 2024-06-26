@@ -17,6 +17,7 @@ from improved_diff.script_util import (
     args_to_dict,
     create_model_and_diffusion,
     model_and_diffusion_defaults,
+    create_mu2model_and_diffusion,
 )
 from improved_diff.train_util import TrainLoop
 
@@ -73,6 +74,10 @@ def main():
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
     model.to(device)
+    mu2model, diffusion = create_mu2model_and_diffusion(
+        **args_to_dict(args, model_and_diffusion_defaults().keys())
+    )
+    mu2model.to(device)
     schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
     logger.log("creating data loader...")
     data = load_data(
@@ -83,9 +88,8 @@ def main():
     )
 
     logger.log("training...")
-
     TrainLoop(
-        model=model,
+        model=mu2model,
         diffusion=diffusion,
         data=data,
         batch_size=args.batch_size,
@@ -123,8 +127,9 @@ def debug_main():
 
 
 if __name__ == "__main__":
-    cProfile.run("main()", "profiling_info.prof")
+    main()
+    # cProfile.run("main()", "profiling_info.prof")
 
-    p = pstats.Stats("profiling_data.prof")
+    # p = pstats.Stats("profiling_data.prof")
     p.sort_stats("cumulative").print_stats(10)
     # debug_main()

@@ -4,6 +4,7 @@ import inspect
 from . import gaussian_diffusion as gd
 from .respace import SpacedDiffusion, space_timesteps
 from .unet import SuperResModel, UNetModel
+from .m2unet import MU2NetModel
 
 NUM_CLASSES = 1000
 
@@ -18,7 +19,7 @@ def model_and_diffusion_defaults():
         num_res_blocks=2,
         num_heads=4,
         num_heads_upsample=-1,
-        attention_resolutions="16,8",
+        attention_resolutions="18,9",
         dropout=0.0,
         learn_sigma=False,
         sigma_small=False,
@@ -96,20 +97,109 @@ def create_model(
     use_scale_shift_norm,
     dropout,
 ):
-    if image_size == 256:
+    if image_size == 256:  # 256:8 = 32
         channel_mult = (1, 1, 2, 2, 4, 4)
-    elif image_size == 64:
+    elif image_size == 64:  # 64:8 = 32
         channel_mult = (1, 2, 3, 4)
     elif image_size == 32:
         channel_mult = (1, 2, 2, 2)
+    # MU2Net required size
+    elif image_size == 36:  # 32:8 = 4
+        channel_mult = (1, 2, 2, 2)
     else:
-        raise ValueError(f"unsupported image size: {image_size}")
+        raise ValueError(f">> unsupported image size: {image_size}")
 
     attention_ds = []
     for res in attention_resolutions.split(","):
         attention_ds.append(image_size // int(res))
 
     return UNetModel(
+        in_channels=3,
+        model_channels=num_channels,
+        out_channels=(3 if not learn_sigma else 6),
+        num_res_blocks=num_res_blocks,
+        attention_resolutions=tuple(attention_ds),
+        dropout=dropout,
+        channel_mult=channel_mult,
+        num_classes=(NUM_CLASSES if class_cond else None),
+        use_checkpoint=use_checkpoint,
+        num_heads=num_heads,
+        num_heads_upsample=num_heads_upsample,
+        use_scale_shift_norm=use_scale_shift_norm,
+    )
+
+
+def create_mu2model_and_diffusion(
+    image_size,
+    class_cond,
+    learn_sigma,
+    sigma_small,
+    num_channels,
+    num_res_blocks,
+    num_heads,
+    num_heads_upsample,
+    attention_resolutions,
+    dropout,
+    diffusion_steps,
+    noise_schedule,
+    timestep_respacing,
+    use_kl,
+    predict_xstart,
+    rescale_timesteps,
+    rescale_learned_sigmas,
+    use_checkpoint,
+    use_scale_shift_norm,
+):
+    model = create_munet(
+        image_size,
+        num_channels,
+        num_res_blocks,
+        learn_sigma=learn_sigma,
+        class_cond=class_cond,
+        use_checkpoint=use_checkpoint,
+        attention_resolutions=attention_resolutions,
+        num_heads=num_heads,
+        num_heads_upsample=num_heads_upsample,
+        use_scale_shift_norm=use_scale_shift_norm,
+        dropout=dropout,
+    )
+    diffusion = create_gaussian_diffusion(
+        steps=diffusion_steps,
+        learn_sigma=learn_sigma,
+        sigma_small=sigma_small,
+        noise_schedule=noise_schedule,
+        use_kl=use_kl,
+        predict_xstart=predict_xstart,
+        rescale_timesteps=rescale_timesteps,
+        rescale_learned_sigmas=rescale_learned_sigmas,
+        timestep_respacing=timestep_respacing,
+    )
+    return model, diffusion
+
+
+def create_munet(
+    image_size,
+    num_channels,
+    num_res_blocks,
+    learn_sigma,
+    class_cond,
+    use_checkpoint,
+    attention_resolutions,
+    num_heads,
+    num_heads_upsample,
+    use_scale_shift_norm,
+    dropout,
+):
+    assert image_size == 36
+    channel_mult = (1, 2, 2, 2)
+    attention_resolutions = "18,9"
+
+    attention_ds = []
+    for res in attention_resolutions.split(","):
+        attention_ds.append(image_size // int(res))
+
+    return MU2NetModel(
+        image_size=image_size,
         in_channels=3,
         model_channels=num_channels,
         out_channels=(3 if not learn_sigma else 6),
