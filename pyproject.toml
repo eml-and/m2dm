@@ -9,7 +9,7 @@ py-modules = ["m2dm"]
 find = {}
 
 [project]
-name = "m2dm"
+name = "mu2dm"
 version = "0.0.1"
 authors = [
   { name="Emil Andreas", email="emil.andreas@ipa.fraunhofer.de" },
