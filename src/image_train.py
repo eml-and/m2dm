@@ -6,6 +6,7 @@ import argparse
 import cProfile
 import json
 import pstats
+from fvcore.nn import FlopCountAnalysis, parameter_count_table
 
 import torch as th
 
@@ -16,8 +17,8 @@ from improved_diff.script_util import (
     add_dict_to_argparser,
     args_to_dict,
     create_model_and_diffusion,
-    model_and_diffusion_defaults,
     create_mu2model_and_diffusion,
+    model_and_diffusion_defaults,
 )
 from improved_diff.train_util import TrainLoop
 
@@ -41,7 +42,7 @@ def create_argparser():
         log_interval=10,
         save_interval=10000,
         resume_checkpoint="",
-        use_fp16=True,
+        use_fp16=False,
         fp16_scale_growth=1e-3,
         use_kl=True,
         learn_sigma=True,
@@ -73,11 +74,26 @@ def main():
     model, diffusion = create_model_and_diffusion(
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
-    model.to(device)
+    model.to(device)  # n_params: 27.223.686
     mu2model, diffusion = create_mu2model_and_diffusion(
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
-    mu2model.to(device)
+    # input_tensor = th.randn(2, 3, 36, 36).to(device)
+    # ts, y = th.arange(2).to(device), th.tensor([0, 1]).to(device)
+    mu2model.to(device)  # n_params: 25.874.310
+    # this breaks down at conv1d
+    # RuntimeError: Expected 2D (unbatched) or 3D (batched) input to conv1d, but got input of size: [2, 1024, 25, 25]
+    # mu2model.get_feature_vectors(x=input_tensor,
+
+    #                              timesteps=ts,
+    #                              y=y)
+    # # TODO: Remove
+    # flop_count = FlopCountAnalysis(model, input_tensor)
+    # flops = flop_count.total()
+    # flop_m2 = FlopCountAnalysis(mu2model, input_tensor)
+    # flops_m2 = flop_m2.total()
+    # print(f"Flops model: {flops}, flops m2: {flops_m2}")
+    # breakpoint()
     schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
     logger.log("creating data loader...")
     data = load_data(
@@ -85,6 +101,9 @@ def main():
         batch_size=args.batch_size,
         image_size=args.image_size,
         class_cond=args.class_cond,
+    )
+    print(
+        f"Number of params: U {count_parameters(model)}, M2 {count_parameters(mu2model)}"
     )
 
     logger.log("training...")

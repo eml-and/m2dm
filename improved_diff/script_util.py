@@ -2,9 +2,9 @@ import argparse
 import inspect
 
 from . import gaussian_diffusion as gd
+from .m2unet import MU2NetModel
 from .respace import SpacedDiffusion, space_timesteps
 from .unet import SuperResModel, UNetModel
-from .m2unet import MU2NetModel
 
 NUM_CLASSES = 1000
 

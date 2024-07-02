@@ -1,6 +1,4 @@
 import math
-import os
-import sys
 from abc import abstractmethod
 
 import numpy as np
@@ -8,6 +6,7 @@ import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from fvcore.nn import FlopCountAnalysis, parameter_count_table
 
 from improved_diff.fp16_util import convert_module_to_f16, convert_module_to_f32
 from improved_diff.nn import (
@@ -21,6 +20,8 @@ from improved_diff.nn import (
     zero_module,
 )
 
+from improved_diff import logger
+
 
 def blockdiag_matmul(x, weights):
     """
@@ -33,7 +34,7 @@ def blockdiag_matmul(x, weights):
     Reshape the result back to the original shape of x
     return result.reshape(*x.shape)
     """
-    if not x.shape[-1] == weights.shape[0]**2:
+    if not x.shape[-1] == weights.shape[0] ** 2:
         breakpoint()
     return th.einsum(
         "bnm,...bm ->... bn",
@@ -116,11 +117,15 @@ class MonarchLinear(nn.Module):
         super().__init__()
         self.m3 = MonarchMatrix(sqrt_d)
         self.m4 = MonarchMatrix(sqrt_d)
+        self.sqrt_d = sqrt_d
 
         self.layer_norm = nn.LayerNorm(sqrt_d**2)
 
     def forward(self, x):
-        output = self.m4(self.m3(x))
+        try:
+            output = self.m4(self.m3(x))
+        except Exception:
+            breakpoint()
         return self.layer_norm(output)
 
 
@@ -174,22 +179,14 @@ class GatedConvBlock(nn.Module):
         return conv_out * gate_out
 
 
-class MonarchGatedConv(nn.Module):
-    """
-    alternatives to Eq. 2 (conv) from M2 paper
-    V matmul M2 (K1 matmul M1 (Q matmul K)) where Q,K,V are
-    linear projections of X, reproduces a gated convolution block
-
-    TODO: ablation if MonarchLinear or MonarchMLP works better
-    TODO: ablation of LayerNorm is necessary
-    """
-
+class MonarchGatedConvBase(nn.Module):
     def __init__(
         self,
-        sqrt_n: int,
-        sqrt_d: int,
+        level: int,
         res: bool,
         channels: int,
+        sqrt_d: int = 6,
+        sqrt_n: int = 6,
         num_heads: int = 1,
         use_checkpoint: bool = False,
     ):
@@ -197,40 +194,104 @@ class MonarchGatedConv(nn.Module):
         self.res = res
         self.channels = channels
         self.num_heads = num_heads
+        self.sqrt_d = sqrt_d
+        self.sqrt_n = sqrt_n
         self.use_checkpoint = use_checkpoint
-        self.q = MonarchLinear(sqrt_d=sqrt_d)
-        self.k = MonarchLinear(sqrt_d=sqrt_d)
-        self.v = MonarchLinear(sqrt_d=sqrt_d)
+        self.q = MonarchLinear(sqrt_d=self.sqrt_d)
+        self.k = MonarchLinear(sqrt_d=self.sqrt_d)
+        self.v = MonarchLinear(sqrt_d=self.sqrt_d)
 
-        self.m2, self.m1 = MonarchMatrix(sqrt_n), MonarchMatrix(sqrt_n)
-        self.m9, self.m8 = MonarchMatrix(sqrt_n), MonarchMatrix(sqrt_n)
+        self.m2, self.m1 = MonarchMatrix(self.sqrt_n), MonarchMatrix(self.sqrt_n)
+        self.m9, self.m8 = MonarchMatrix(self.sqrt_n), MonarchMatrix(self.sqrt_n)
 
-        self.d_kernel = nn.Parameter(th.randn(1, sqrt_d**2))
-        self.d_kernel_bi = nn.Parameter(th.randn(1, sqrt_d**2))
+        self.d_kernel = nn.Parameter(th.randn(1, self.sqrt_d**2))
+        self.d_kernel_bi = nn.Parameter(th.randn(1, self.sqrt_d**2))
         self.norm = normalization(channels)
-        self.proj_out = zero_module(conv_nd(1, channels, channels, 1))
+        self.proj_out = zero_module(conv_nd(2, self.num_heads * channels, channels, 1))
 
     def forward(self, x):
         return checkpoint(self._forward, (x,), self.parameters(), self.use_checkpoint)
 
     def _forward(self, x):
         shape = x.shape
-        x = th.cat(self.num_heads * [x], dim=1)
-        Q = self.q(x)
-        K = self.k(x)
-        V = self.v(x)
-        h = V * self.m2(self.d_kernel * self.m1(Q * K))
+        qkv = th.cat(self.num_heads * [x], dim=1)
+        Q = self.q(qkv)
+        K = self.k(qkv)
+        V = self.v(qkv)
+        hidden = V * self.m2(self.d_kernel * self.m1(Q * K))
         if not self.res:
-            h = self.proj_out(h)
-            assert h.shape == shape
-            return h
+            hidden = self.proj_out(hidden)
+            assert hidden.shape == shape
+            return hidden
         else:
             x_res = self.m9(self.d_kernel * self.m8(x))
             # TODO: add norm
-            h = self.proj_out(h)
-            assert x_res.shape == h.shape
-        return x_res + h
+            hidden = self.proj_out(hidden)
+            assert x_res.shape == hidden.shape
+        return x_res + hidden
 
+
+class MonarchGatedConvDown(MonarchGatedConvBase):
+    def __init__(
+        self,
+        level: int,
+        res: bool,
+        channels: int,
+        num_heads: int = 1,
+        use_checkpoint: bool = False,
+    ):
+        sqrt_d = sqrt_n = 5 if level < 2 else 4
+        super().__init__(
+            level=level,
+            res=res,
+            channels=channels,
+            num_heads=num_heads,
+            use_checkpoint=use_checkpoint,
+            sqrt_d=sqrt_d,
+            sqrt_n=sqrt_n
+        )
+
+
+class MonarchGatedConvMiddle(MonarchGatedConvBase):
+    def __init__(
+        self,
+        level: int,
+        res: bool,
+        channels: int,
+        num_heads: int = 1,
+        use_checkpoint: bool = False,
+    ):
+        sqrt_d = sqrt_n = 3
+        super().__init__(
+            level=level,
+            res=res,
+            channels=channels,
+            num_heads=num_heads,
+            use_checkpoint=use_checkpoint,
+            sqrt_d=sqrt_d,
+            sqrt_n=sqrt_n
+        )
+
+
+class MonarchGatedConvUp(MonarchGatedConvBase):
+    def __init__(
+        self,
+        level: int,
+        res: bool,
+        channels: int,
+        num_heads: int = 1,
+        use_checkpoint: bool = False,
+    ):
+        sqrt_d = sqrt_n = 4 if level <= 3 else 5
+        super().__init__(
+            level=level,
+            res=res,
+            channels=channels,
+            num_heads=num_heads,
+            use_checkpoint=use_checkpoint,
+            sqrt_d=sqrt_d,
+            sqrt_n=sqrt_n
+        )
 
 class TimestepBlock(nn.Module):
     """
@@ -314,7 +375,38 @@ class Downsample(nn.Module):
     def forward(self, x):
         assert x.shape[1] == self.channels
         return self.op(x)
-    
+
+
+class Upsample_(nn.Module):
+    """
+    Convolutional upsampler to maintain M2 dimensions.
+
+    :param channels: channels in the inputs and outputs.
+    :param use_conv: a bool determining if a convolution is applied.
+    :param dims: determines if the signal is 1D, 2D, or 3D. If 3D, then
+                 upsampling occurs in the inner-two dimensions.
+    """
+
+    def __init__(self, channels, use_conv, dims=2):
+        super().__init__()
+        self.channels = channels
+        self.use_conv = use_conv
+        self.dims = dims
+        if use_conv:
+            self.conv = conv_nd(dims, channels, channels, 3, padding=1)
+
+    def forward(self, x):
+        assert x.shape[1] == self.channels
+        if self.dims == 3:
+            x = F.interpolate(
+                x, (x.shape[2], x.shape[3] * 2, x.shape[4] * 2), mode="nearest"
+            )
+        else:
+            x = F.interpolate(x, scale_factor=2, mode="nearest")
+        if self.use_conv:
+            x = self.conv(x)
+        return x
+
 
 class Downsample_(nn.Module):
     """
@@ -328,8 +420,14 @@ class Downsample_(nn.Module):
 
     def __init__(self, channels, use_conv, level: int, dims=2):
         super().__init__()
-        if level < 2:
+        # assuming input images are 36x36 creates
+        # level 0: 25x25
+        # level 1: 16x16
+        # level 2: 9x9
+        if level == 0:
             self.padding = 8
+        elif level == 1:
+            self.padding = 4
         else:
             self.padding = 2
         self.channels = channels
@@ -337,16 +435,15 @@ class Downsample_(nn.Module):
         self.dims = dims
         stride = 2 if dims != 3 else (1, 2, 2)
         if use_conv:
-            self.op = conv_nd(dims, channels, channels, 3, stride=stride, padding=self.padding)
+            self.op = conv_nd(
+                dims, channels, channels, 3, stride=stride, padding=self.padding
+            )
         else:
             self.op = avg_pool_nd(stride)
 
     def forward(self, x):
         assert x.shape[1] == self.channels
         return self.op(x)
-
-
-
 
 
 class ResBlock(TimestepBlock):
@@ -617,9 +714,8 @@ class MU2NetModel(nn.Module):
                 ch = mult * model_channels
                 if ds in attention_resolutions:
                     layers.append(
-                        MonarchGatedConv(
-                            sqrt_d=self.sqrt_d,
-                            sqrt_n=self.sqrt_n,
+                        MonarchGatedConvDown(
+                            level=level,
                             res=True,
                             channels=ch,
                             use_checkpoint=use_checkpoint,
@@ -628,9 +724,12 @@ class MU2NetModel(nn.Module):
                     )
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
                 input_block_chans.append(ch)
+            # channel_mult = [1,2,4,8], if level NOT 0,1,3 ...
             if level != len(channel_mult) - 1:
                 self.input_blocks.append(
-                    TimestepEmbedSequential(Downsample_(ch, conv_resample, dims=dims, level=level))
+                    TimestepEmbedSequential(
+                        Downsample_(ch, conv_resample, dims=dims, level=level)
+                    )
                 )
                 input_block_chans.append(ch)
                 ds *= 2
@@ -644,9 +743,8 @@ class MU2NetModel(nn.Module):
                 use_checkpoint=use_checkpoint,
                 use_scale_shift_norm=use_scale_shift_norm,
             ),
-            MonarchGatedConv(
-                sqrt_d=self.sqrt_d,
-                sqrt_n=self.sqrt_n,
+            MonarchGatedConvMiddle(
+                level=0,
                 res=True,
                 channels=ch,
                 use_checkpoint=use_checkpoint,
@@ -679,9 +777,8 @@ class MU2NetModel(nn.Module):
                 ch = model_channels * mult
                 if ds in attention_resolutions:
                     layers.append(
-                        MonarchGatedConv(
-                            sqrt_d=self.sqrt_d,
-                            sqrt_n=self.sqrt_n,
+                        MonarchGatedConvUp(
+                            level=level,
                             res=True,
                             channels=ch,
                             use_checkpoint=use_checkpoint,
@@ -722,7 +819,7 @@ class MU2NetModel(nn.Module):
         """
         return next(self.input_blocks.parameters()).dtype
 
-    def forward(self, x, timesteps, y=None):
+    def forward(self, x, timesteps=2000, y=None):
         """
         Apply the model to an input batch.
 
@@ -742,16 +839,21 @@ class MU2NetModel(nn.Module):
             assert y.shape == (x.shape[0],)
             emb = emb + self.label_emb(y)
 
-        h = x.type(self.inner_dtype)
+        hidden = x.type(self.inner_dtype)
         for module in self.input_blocks:
-            h = module(h, emb)
-            hs.append(h)
-        h = self.middle_block(h, emb)
+            logger.log(f"Input module -- hidden {hidden.shape}")
+            hidden = module(hidden, emb)
+            hs.append(hidden)
+        hidden = self.middle_block(hidden, emb)
+        logger.log(f"Middle module -- hidden {hidden.shape}")
         for module in self.output_blocks:
-            cat_in = th.cat([h, hs.pop()], dim=1)
-            h = module(cat_in, emb)
-        h = h.type(x.dtype)
-        return self.out(h)
+            logger.log(
+                f"Output module -- trying to cat_in {hidden.shape, hs[-1].shape}"
+            )
+            cat_in = th.cat([hidden, hs.pop()], dim=1)
+            hidden = module(cat_in, emb)
+        hidden = hidden.type(x.dtype)
+        return self.out(hidden)
 
     def get_feature_vectors(self, x, timesteps, y=None):
         """
@@ -772,17 +874,18 @@ class MU2NetModel(nn.Module):
             assert y.shape == (x.shape[0],)
             emb = emb + self.label_emb(y)
         result = dict(down=[], up=[])
-        h = x.type(self.inner_dtype)
+        hidden = x.type(self.inner_dtype)
         for module in self.input_blocks:
-            h = module(h, emb)
-            hs.append(h)
-            result["down"].append(h.type(x.dtype))
-        h = self.middle_block(h, emb)
-        result["middle"] = h.type(x.dtype)
+            breakpoint()
+            hidden = module(hidden, emb)
+            hs.append(hidden)
+            result["down"].append(hidden.type(x.dtype))
+        hidden = self.middle_block(hidden, emb)
+        result["middle"] = hidden.type(x.dtype)
         for module in self.output_blocks:
-            cat_in = th.cat([h, hs.pop()], dim=1)
-            h = module(cat_in, emb)
-            result["up"].append(h.type(x.dtype))
+            cat_in = th.cat([hidden, hs.pop()], dim=1)
+            hidden = module(cat_in, emb)
+            result["up"].append(hidden.type(x.dtype))
         return result
 
 
@@ -806,54 +909,55 @@ def main():
     # x_h = mm.forward(x)
     # print(x_h.shape)
 
-    ### Model Test
-    sqrt_n = 6
-    sqrt_d = 6
-    model = MonarchMixerLayer(sqrt_n, sqrt_d)
-    out = model(x)
-    breakpoint()
+    # ### Model Test
+    # sqrt_n = 6
+    # sqrt_d = 6
+    # model = MonarchMixerLayer(sqrt_n, sqrt_d)
+    # out = model(x)
 
-    model_ResBlock = nn.Sequential(
-        ResBlock(
-            channels=64,
-            emb_channels=4 * 64,
-            out_channels=1 * 64,
-            use_conv=False,
-            dims=2,
-            dropout=0,
-        ),
-        ResBlock(
-            channels=64,
-            emb_channels=4 * 64,
-            out_channels=1 * 64,
-            use_conv=False,
-            dims=2,
-            dropout=0,
-        ),
-        ResBlock(
-            channels=128,
-            emb_channels=4 * 128,
-            out_channels=1 * 128,
-            use_conv=False,
-            dims=2,
-            dropout=0,
-        ),
-    )
+    # model_ResBlock = nn.Sequential(
+    #     ResBlock(
+    #         channels=64,
+    #         emb_channels=4 * 64,
+    #         out_channels=1 * 64,
+    #         use_conv=False,
+    #         dims=2,
+    #         dropout=0,
+    #     ),
+    #     ResBlock(
+    #         channels=64,
+    #         emb_channels=4 * 64,
+    #         out_channels=1 * 64,
+    #         use_conv=False,
+    #         dims=2,
+    #         dropout=0,
+    #     ),
+    #     ResBlock(
+    #         channels=128,
+    #         emb_channels=4 * 128,
+    #         out_channels=1 * 128,
+    #         use_conv=False,
+    #         dims=2,
+    #         dropout=0,
+    #     ),
+    # )
 
-    model_MML = nn.Sequential(
-        MonarchMixerLayer(6, 6),
-        MonarchMixerLayer(5, 5),
-        MonarchMixerLayer(4, 4),
-    )
-    # print(count_parameters(model_ResBlock))  # 542464
-    # print(count_parameters(model_MML))
+    # model_MML = nn.Sequential(
+    #     MonarchMixerLayer(6, 6),
+    #     MonarchMixerLayer(5, 5),
+    #     MonarchMixerLayer(4, 4),
+    # )
+    # # print(count_parameters(model_ResBlock))  # 542464
+    # # print(count_parameters(model_MML))
 
-    # TODO: MGC similarly to attention
-    model_MGC = nn.Sequential(
-        MonarchGatedConv(),
-        MonarchGatedConv(),
-        MonarchGatedConv(),
-    )
+    # # TODO: MGC similarly to attention
+    # model_MGC = nn.Sequential(
+    #     MonarchGatedConv(),
+    #     MonarchGatedConv(),
+    #     MonarchGatedConv(),
+    # )
+    # flop_count = FlopCountAnalysis(model, input_tensor)
+    # flops = flop_count.total()
 
 
 if __name__ == "__main__":
