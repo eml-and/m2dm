@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from fvcore.nn import FlopCountAnalysis, parameter_count_table
 
+from improved_diff import logger
 from improved_diff.fp16_util import convert_module_to_f16, convert_module_to_f32
 from improved_diff.nn import (
     SiLU,
@@ -19,8 +20,6 @@ from improved_diff.nn import (
     timestep_embedding,
     zero_module,
 )
-
-from improved_diff import logger
 
 
 def blockdiag_matmul(x, weights):
@@ -240,6 +239,7 @@ class MonarchGatedConvDown(MonarchGatedConvBase):
         num_heads: int = 1,
         use_checkpoint: bool = False,
     ):
+        # 25x25b abnd 16x16
         sqrt_d = sqrt_n = 5 if level < 2 else 4
         super().__init__(
             level=level,
@@ -248,7 +248,7 @@ class MonarchGatedConvDown(MonarchGatedConvBase):
             num_heads=num_heads,
             use_checkpoint=use_checkpoint,
             sqrt_d=sqrt_d,
-            sqrt_n=sqrt_n
+            sqrt_n=sqrt_n,
         )
 
 
@@ -261,6 +261,7 @@ class MonarchGatedConvMiddle(MonarchGatedConvBase):
         num_heads: int = 1,
         use_checkpoint: bool = False,
     ):
+        # throught the 9x9 bottleneck
         sqrt_d = sqrt_n = 3
         super().__init__(
             level=level,
@@ -269,7 +270,7 @@ class MonarchGatedConvMiddle(MonarchGatedConvBase):
             num_heads=num_heads,
             use_checkpoint=use_checkpoint,
             sqrt_d=sqrt_d,
-            sqrt_n=sqrt_n
+            sqrt_n=sqrt_n,
         )
 
 
@@ -282,6 +283,7 @@ class MonarchGatedConvUp(MonarchGatedConvBase):
         num_heads: int = 1,
         use_checkpoint: bool = False,
     ):
+        # 16x16 and 25x25
         sqrt_d = sqrt_n = 4 if level <= 3 else 5
         super().__init__(
             level=level,
@@ -290,8 +292,9 @@ class MonarchGatedConvUp(MonarchGatedConvBase):
             num_heads=num_heads,
             use_checkpoint=use_checkpoint,
             sqrt_d=sqrt_d,
-            sqrt_n=sqrt_n
+            sqrt_n=sqrt_n,
         )
+
 
 class TimestepBlock(nn.Module):
     """

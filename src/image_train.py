@@ -6,9 +6,9 @@ import argparse
 import cProfile
 import json
 import pstats
-from fvcore.nn import FlopCountAnalysis, parameter_count_table
 
 import torch as th
+from fvcore.nn import FlopCountAnalysis, parameter_count_table
 
 from improved_diff import logger
 from improved_diff.image_datasets import load_data
