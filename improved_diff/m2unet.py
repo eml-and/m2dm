@@ -214,6 +214,8 @@ class MonarchGatedConvBase(nn.Module):
     def _forward(self, x):
         shape = x.shape
         qkv = th.cat(self.num_heads * [x], dim=1)
+        # check if this works
+        qkv = self.norm(qkv)
         Q = self.q(qkv)
         K = self.k(qkv)
         V = self.v(qkv)
@@ -284,7 +286,8 @@ class MonarchGatedConvUp(MonarchGatedConvBase):
         use_checkpoint: bool = False,
     ):
         # 16x16 and 25x25
-        sqrt_d = sqrt_n = 4 if level <= 3 else 5
+        # we are twice on level 2 and twice on level 1
+        sqrt_d = sqrt_n = 4 if level > 1 else 5
         super().__init__(
             level=level,
             res=res,
@@ -402,10 +405,23 @@ class Upsample_(nn.Module):
         assert x.shape[1] == self.channels
         if self.dims == 3:
             x = F.interpolate(
-                x, (x.shape[2], x.shape[3] * 2, x.shape[4] * 2), mode="nearest"
+                x,
+                (
+                    x.shape[2],
+                    (int(math.sqrt(x.shape[3]) + 1) ** 2),
+                    (int(math.sqrt(x.shape[4]) + 1) ** 2),
+                ),
+                mode="nearest",
             )
         else:
-            x = F.interpolate(x, scale_factor=2, mode="nearest")
+            x = F.interpolate(
+                x,
+                (
+                    (int(math.sqrt(x.shape[2]) + 1) ** 2),
+                    (int(math.sqrt(x.shape[3]) + 1) ** 2),
+                ),
+                mode="nearest",
+            )
         if self.use_conv:
             x = self.conv(x)
         return x
@@ -623,7 +639,7 @@ class QKVAttention(nn.Module):
 
 class MU2NetModel(nn.Module):
     """
-    The full MU2Net model with attention and timestep embedding.
+    The full MU2Net model with MonarchGatedConvs instead of attention.
 
     :param in_channels: channels in the input Tensor.
     :param model_channels: base channel count for the model.
@@ -764,8 +780,10 @@ class MU2NetModel(nn.Module):
         )
 
         self.output_blocks = nn.ModuleList([])
+        counter = 0
         for level, mult in list(enumerate(channel_mult))[::-1]:
             for i in range(num_res_blocks + 1):
+                counter += 1
                 layers = [
                     ResBlock(
                         ch + input_block_chans.pop(),
@@ -777,7 +795,9 @@ class MU2NetModel(nn.Module):
                         use_scale_shift_norm=use_scale_shift_norm,
                     )
                 ]
+
                 ch = model_channels * mult
+                logger.log(f"ch: {ch}, mc: {model_channels}, mult: {mult}")
                 if ds in attention_resolutions:
                     layers.append(
                         MonarchGatedConvUp(
@@ -789,7 +809,7 @@ class MU2NetModel(nn.Module):
                         )
                     )
                 if level and i == num_res_blocks:
-                    layers.append(Upsample(ch, conv_resample, dims=dims))
+                    layers.append(Upsample_(ch, conv_resample, dims=dims))
                     ds //= 2
                 self.output_blocks.append(TimestepEmbedSequential(*layers))
 
@@ -822,7 +842,7 @@ class MU2NetModel(nn.Module):
         """
         return next(self.input_blocks.parameters()).dtype
 
-    def forward(self, x, timesteps=2000, y=None):
+    def forward(self, x, timesteps, y=None):
         """
         Apply the model to an input batch.
 
@@ -853,8 +873,12 @@ class MU2NetModel(nn.Module):
             logger.log(
                 f"Output module -- trying to cat_in {hidden.shape, hs[-1].shape}"
             )
+            if hidden.shape != hs[-1].shape:
+                logger.warn("Concating different shapes")
+                breakpoint()
             cat_in = th.cat([hidden, hs.pop()], dim=1)
             hidden = module(cat_in, emb)
+            logger.log(f"Final cated shape is {hidden.shape}")
         hidden = hidden.type(x.dtype)
         return self.out(hidden)
 
