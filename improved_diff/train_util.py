@@ -41,7 +41,7 @@ class TrainLoop:
         fp16_scale_growth=1e-3,
         schedule_sampler=None,
         weight_decay=0.0,
-        lr_anneal_steps=0,
+        lr_anneal_steps=5,
     ):
         self.model = model
         self.diffusion = diffusion
@@ -136,13 +136,12 @@ class TrainLoop:
         self.master_params = make_master_params(self.model_params)
         self.model.convert_to_fp16()
 
-    # @logger.timeit
     def run_loop(self):
+        logger.log(self.lr_anneal_steps)
         while (
             not self.lr_anneal_steps
             or self.step + self.resume_step < self.lr_anneal_steps
         ):
-            # breakpoint()
             batch, cond = next(self.data)
             self.run_step(batch, cond)
             if self.step % self.log_interval == 0:
@@ -229,9 +228,21 @@ class TrainLoop:
             update_ema(params, self.master_params, rate=rate)
 
     def _log_grad_norm(self):
+        # sqsum = 0.0
+        # for p in self.master_params:
+        #         sqsum += (p.grad**2).sum().item()
         sqsum = 0.0
         for p in self.master_params:
-            sqsum += (p.grad**2).sum().item()
+            if p.grad is not None:
+                sqsum += (p.grad**2).sum().item()
+            else:
+                # Log the parameter name and shape for debugging
+                for name, param in self.model.named_parameters():
+                    if param is p:
+                        logger.log(
+                            f"Parameter {name} has no gradient. Shape: {param.shape}"
+                        )
+                        break
         logger.logkv_mean("grad_norm", np.sqrt(sqsum))
 
     def _anneal_lr(self):

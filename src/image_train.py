@@ -4,11 +4,13 @@ Train a diffusion model on images.
 
 import argparse
 import cProfile
+import datetime
 import json
 import pstats
+import time
 
+import numpy as np
 import torch as th
-from fvcore.nn import FlopCountAnalysis, parameter_count_table
 
 from improved_diff import logger
 from improved_diff.image_datasets import load_data
@@ -35,7 +37,7 @@ def create_argparser():
         schedule_sampler="uniform",
         lr=1e-4,
         weight_decay=0.0,
-        lr_anneal_steps=0,
+        lr_anneal_steps=5,
         batch_size=2,
         microbatch=-1,  # -1 disables microbatches
         ema_rate="0.9999",  # comma-separated list of EMA values
@@ -49,8 +51,8 @@ def create_argparser():
         class_cond=True,
         num_channels=128,
         noise_schedule="cosine",
-        num_res_block=3,
-        image_size=32,
+        num_res_block=1,
+        image_size=36,
         diffusion_steps=10,
     )
     defaults.update(model_and_diffusion_defaults())
@@ -71,29 +73,14 @@ def main():
     logger.configure()
 
     logger.log("creating model and diffusion...")
-    model, diffusion = create_model_and_diffusion(
-        **args_to_dict(args, model_and_diffusion_defaults().keys())
-    )
-    model.to(device)  # n_params: 27.223.686
+    # model, diffusion = create_model_and_diffusion(
+    #     **args_to_dict(args, model_and_diffusion_defaults().keys())
+    # )
+    # model.to(device)  # n_params: 27.223.686
     mu2model, diffusion = create_mu2model_and_diffusion(
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
-    # input_tensor = th.randn(2, 3, 36, 36).to(device)
-    # ts, y = th.arange(2).to(device), th.tensor([0, 1]).to(device)
-    mu2model.to(device)  # n_params: 25.874.310
-    # this breaks down at conv1d
-    # RuntimeError: Expected 2D (unbatched) or 3D (batched) input to conv1d, but got input of size: [2, 1024, 25, 25]
-    # mu2model.get_feature_vectors(x=input_tensor,
-
-    #                              timesteps=ts,
-    #                              y=y)
-    # # TODO: Remove
-    # flop_count = FlopCountAnalysis(model, input_tensor)
-    # flops = flop_count.total()
-    # flop_m2 = FlopCountAnalysis(mu2model, input_tensor)
-    # flops_m2 = flop_m2.total()
-    # print(f"Flops model: {flops}, flops m2: {flops_m2}")
-    # breakpoint()
+    mu2model.to(device)  # n_params: 27.241.998
     schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
     logger.log("creating data loader...")
     data = load_data(
@@ -102,10 +89,11 @@ def main():
         image_size=args.image_size,
         class_cond=args.class_cond,
     )
-    print(
-        f"Number of params: U {count_parameters(model)}, M2 {count_parameters(mu2model)}"
-    )
+    # print(
+    #     f"Number of params: U {count_parameters(model)}, M2 {count_parameters(mu2model)}"
+    # )
 
+    start = time.perf_counter()
     logger.log("training...")
     TrainLoop(
         model=mu2model,
@@ -125,30 +113,14 @@ def main():
         lr_anneal_steps=args.lr_anneal_steps,
     ).run_loop()
 
-
-def debug_main():
-    device = "cuda"
-    # Namespace
-    args = create_argparser().parse_args()
-
-    logger.configure()
-
-    logger.log("creating model and diffusion...")
-    model, _ = create_model_and_diffusion(
-        **args_to_dict(args, model_and_diffusion_defaults().keys())
-    )
-    model.to(device)
-    x = th.randn(4, 3, 64, 64).to(device)
-    timesteps = th.tensor([2000]).to(device)
-    # dict containing down, middle and up feature vectors
-    result = model.get_feature_vectors(x, timesteps)
-    print(result)
+    end = time.perf_counter()
+    sec = np.round(end - start, 2)
+    logger.log(f"Exited train loop after {str(datetime.timedelta(seconds = sec))} h.")
 
 
 if __name__ == "__main__":
-    main()
-    # cProfile.run("main()", "profiling_info.prof")
+    # main()
+    cProfile.run("main()", "profiling_data.txt")
 
-    # p = pstats.Stats("profiling_data.prof")
-    p.sort_stats("cumulative").print_stats(10)
-    # debug_main()
+    p = pstats.Stats("profiling_data.txt")
+    p.sort_stats("cumulative").print_stats(20)

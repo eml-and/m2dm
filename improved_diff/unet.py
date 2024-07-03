@@ -6,6 +6,8 @@ import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
 
+from improved_diff import logger
+
 from .fp16_util import convert_module_to_f16, convert_module_to_f32
 from .nn import (
     SiLU,
@@ -223,7 +225,6 @@ class AttentionBlock(nn.Module):
         return checkpoint(self._forward, (x,), self.parameters(), self.use_checkpoint)
 
     def _forward(self, x):
-        breakpoint()
         b, c, *spatial = x.shape
         x = x.reshape(b, c, -1)
         qkv = self.qkv(self.norm(x))
@@ -485,17 +486,24 @@ class UNetModel(nn.Module):
 
         h = x.type(self.inner_dtype)
         for module in self.input_blocks:
+            logger.log(f"Input module -- hidden {h.shape}")
             h = module(h, emb)
             hs.append(h)
         h = self.middle_block(h, emb)
+        logger.log(f"Middle module -- hidden {h.shape}")
         for module in self.output_blocks:
+            logger.log(f"Output module -- trying to cat_in {h.shape, hs[-1].shape}")
             try:
                 cat_in = th.cat([h, hs.pop()], dim=1)
+                logger.log(f"Cated shape is {cat_in.shape}")
             except RuntimeError:
                 breakpoint()
             h = module(cat_in, emb)
+            logger.log(f"Hidden shape is {h.shape}")
         h = h.type(x.dtype)
-        return self.out(h)
+        h = self.out(h)
+        logger.log(f"Returned shape is {h.shape}")
+        return h
 
     def get_feature_vectors(self, x, timesteps, y=None):
         """

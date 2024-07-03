@@ -205,7 +205,7 @@ class MonarchGatedConvBase(nn.Module):
 
         self.d_kernel = nn.Parameter(th.randn(1, self.sqrt_d**2))
         self.d_kernel_bi = nn.Parameter(th.randn(1, self.sqrt_d**2))
-        self.norm = normalization(channels)
+        self.norm = normalization(channels * self.num_heads)
         self.proj_out = zero_module(conv_nd(2, self.num_heads * channels, channels, 1))
 
     def forward(self, x):
@@ -225,8 +225,8 @@ class MonarchGatedConvBase(nn.Module):
             assert hidden.shape == shape
             return hidden
         else:
-            x_res = self.m9(self.d_kernel * self.m8(x))
-            # TODO: add norm
+            x_res = self.m9(self.d_kernel_bi * self.m8(x))
+            # TODO: add norm ?
             hidden = self.proj_out(hidden)
             assert x_res.shape == hidden.shape
         return x_res + hidden
@@ -639,14 +639,15 @@ class QKVAttention(nn.Module):
 
 class MU2NetModel(nn.Module):
     """
-    The full MU2Net model with MonarchGatedConvs instead of attention.
+    The full MU2Net model with MonarchGatedConvs (MGC) instead of attention.
+    TODO: make it fp16-able
 
     :param in_channels: channels in the input Tensor.
     :param model_channels: base channel count for the model.
     :param out_channels: channels in the output Tensor.
     :param num_res_blocks: number of residual blocks per downsample.
     :param attention_resolutions: a collection of downsample rates at which
-        attention will take place. May be a set, list, or tuple.
+        attention (MGC) will take place. May be a set, list, or tuple.
         For example, if this contains 4, then at 4x downsampling, attention
         will be used.
     :param dropout: the dropout probability.
@@ -797,7 +798,7 @@ class MU2NetModel(nn.Module):
                 ]
 
                 ch = model_channels * mult
-                logger.log(f"ch: {ch}, mc: {model_channels}, mult: {mult}")
+                # logger.log(f"ch: {ch}, mc: {model_channels}, mult: {mult}")
                 if ds in attention_resolutions:
                     layers.append(
                         MonarchGatedConvUp(
@@ -864,23 +865,23 @@ class MU2NetModel(nn.Module):
 
         hidden = x.type(self.inner_dtype)
         for module in self.input_blocks:
-            logger.log(f"Input module -- hidden {hidden.shape}")
+            # logger.log(f"Input module -- hidden {hidden.shape}")
             hidden = module(hidden, emb)
             hs.append(hidden)
         hidden = self.middle_block(hidden, emb)
-        logger.log(f"Middle module -- hidden {hidden.shape}")
+        # logger.log(f"Middle module -- hidden {hidden.shape}")
         for module in self.output_blocks:
-            logger.log(
-                f"Output module -- trying to cat_in {hidden.shape, hs[-1].shape}"
-            )
-            if hidden.shape != hs[-1].shape:
-                logger.warn("Concating different shapes")
-                breakpoint()
+            # logger.log(
+            #     f"Output module -- trying to cat_in {hidden.shape, hs[-1].shape}"
+            # )
             cat_in = th.cat([hidden, hs.pop()], dim=1)
+            # logger.log(f"Cated shape is {cat_in.shape}")
             hidden = module(cat_in, emb)
-            logger.log(f"Final cated shape is {hidden.shape}")
+            # logger.log(f"Hidden shape is {hidden.shape}")
         hidden = hidden.type(x.dtype)
-        return self.out(hidden)
+        hidden = self.out(hidden)
+        # logger.log(f"Returned shape is {hidden.shape}")
+        return hidden
 
     def get_feature_vectors(self, x, timesteps, y=None):
         """
@@ -942,33 +943,6 @@ def main():
     # model = MonarchMixerLayer(sqrt_n, sqrt_d)
     # out = model(x)
 
-    # model_ResBlock = nn.Sequential(
-    #     ResBlock(
-    #         channels=64,
-    #         emb_channels=4 * 64,
-    #         out_channels=1 * 64,
-    #         use_conv=False,
-    #         dims=2,
-    #         dropout=0,
-    #     ),
-    #     ResBlock(
-    #         channels=64,
-    #         emb_channels=4 * 64,
-    #         out_channels=1 * 64,
-    #         use_conv=False,
-    #         dims=2,
-    #         dropout=0,
-    #     ),
-    #     ResBlock(
-    #         channels=128,
-    #         emb_channels=4 * 128,
-    #         out_channels=1 * 128,
-    #         use_conv=False,
-    #         dims=2,
-    #         dropout=0,
-    #     ),
-    # )
-
     # model_MML = nn.Sequential(
     #     MonarchMixerLayer(6, 6),
     #     MonarchMixerLayer(5, 5),
@@ -977,12 +951,6 @@ def main():
     # # print(count_parameters(model_ResBlock))  # 542464
     # # print(count_parameters(model_MML))
 
-    # # TODO: MGC similarly to attention
-    # model_MGC = nn.Sequential(
-    #     MonarchGatedConv(),
-    #     MonarchGatedConv(),
-    #     MonarchGatedConv(),
-    # )
     # flop_count = FlopCountAnalysis(model, input_tensor)
     # flops = flop_count.total()
 
