@@ -32,6 +32,7 @@ def load_args_from_json(json_file_path):
 
 
 def create_argparser():
+    # NOTE: this argparser has prio
     defaults = dict(
         data_dir="datasets/cifar_train",
         schedule_sampler="uniform",

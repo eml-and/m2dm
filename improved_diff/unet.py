@@ -486,23 +486,23 @@ class UNetModel(nn.Module):
 
         h = x.type(self.inner_dtype)
         for module in self.input_blocks:
-            logger.log(f"Input module -- hidden {h.shape}")
+            # logger.log(f"Input module -- hidden {h.shape}")
             h = module(h, emb)
             hs.append(h)
         h = self.middle_block(h, emb)
-        logger.log(f"Middle module -- hidden {h.shape}")
+        # logger.log(f"Middle module -- hidden {h.shape}")
         for module in self.output_blocks:
-            logger.log(f"Output module -- trying to cat_in {h.shape, hs[-1].shape}")
+            # logger.log(f"Output module -- trying to cat_in {h.shape, hs[-1].shape}")
             try:
                 cat_in = th.cat([h, hs.pop()], dim=1)
-                logger.log(f"Cated shape is {cat_in.shape}")
+                # logger.log(f"Cated shape is {cat_in.shape}")
             except RuntimeError:
                 breakpoint()
             h = module(cat_in, emb)
-            logger.log(f"Hidden shape is {h.shape}")
+            # logger.log(f"Hidden shape is {h.shape}")
         h = h.type(x.dtype)
         h = self.out(h)
-        logger.log(f"Returned shape is {h.shape}")
+        # logger.log(f"Returned shape is {h.shape}")
         return h
 
     def get_feature_vectors(self, x, timesteps, y=None):

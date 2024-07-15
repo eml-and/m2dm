@@ -904,7 +904,7 @@ class MU2NetModel(nn.Module):
         result = dict(down=[], up=[])
         hidden = x.type(self.inner_dtype)
         for module in self.input_blocks:
-            breakpoint()
+            # breakpoint()
             hidden = module(hidden, emb)
             hs.append(hidden)
             result["down"].append(hidden.type(x.dtype))

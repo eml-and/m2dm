@@ -9,13 +9,14 @@ import os
 import numpy as np
 import torch as th
 import torch.distributed as dist
-from improved_diffusion import dist_util, logger
-from improved_diffusion.script_util import (
+from improved_diff import dist_util, logger
+from improved_diff.script_util import (
     NUM_CLASSES,
     add_dict_to_argparser,
     args_to_dict,
     create_model_and_diffusion,
     model_and_diffusion_defaults,
+    create_mu2model_and_diffusion
 )
 from PIL import Image
 
@@ -60,15 +61,16 @@ def main():
         all_images.extend(sample.cpu().numpy())
         if args.class_cond:
             gathered_labels = [
-                th.zeros_like(classes) for _ in range(dist.get_world_size())
+                # th.zeros_like(classes) for _ in range(dist.get_world_size())
+                th.zeros_like(classes)
             ]
-            dist.all_gather(gathered_labels, classes)
+            # dist.all_gather(gathered_labels, classes)
             all_labels.extend([labels.cpu().numpy() for labels in gathered_labels])
         logger.log(f"created {len(all_images)} samples")
 
     for i, image in enumerate(all_images):
         out_path = os.path.join(
-            os.getcwd(), "results", "ddpm_results_03_06", f"sample_{i}.png"
+            os.getcwd(), "results_unet_15_07", f"sample_{i}.png"
         )
         img = Image.fromarray(image)
         img.save(out_path)

@@ -1,0 +1,29 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+
+# CI
+.codeclimate.yml
+.travis.yml
+.taskcluster.yml
+
+# Docker
+docker-compose.yml
+Dockerfile
+.docker
+.dockerignore
+
+# Byte-compiled / optimized / DLL files
+**/__pycache__/
+**/*.py[cod]
+
+mu2dm.egg-info
+*.egg
+.vscode
+
+# Virtual environment
+.env
+.venv/
+venv/

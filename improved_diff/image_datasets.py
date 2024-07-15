@@ -1,5 +1,6 @@
 import blobfile as bf
 
+import os
 # from mpi4py import MPI
 import numpy as np
 from PIL import Image
