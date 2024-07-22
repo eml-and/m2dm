@@ -16,7 +16,7 @@ from improved_diff.script_util import (
     args_to_dict,
     create_model_and_diffusion,
     model_and_diffusion_defaults,
-    create_mu2model_and_diffusion
+    create_mu2model_and_diffusion,
 )
 from PIL import Image
 
@@ -69,9 +69,7 @@ def main():
         logger.log(f"created {len(all_images)} samples")
 
     for i, image in enumerate(all_images):
-        out_path = os.path.join(
-            os.getcwd(), "results_unet_15_07", f"sample_{i}.png"
-        )
+        out_path = os.path.join(os.getcwd(), "results_unet_15_07", f"sample_{i}.png")
         img = Image.fromarray(image)
         img.save(out_path)
         logger.log(f"saving to {out_path}")

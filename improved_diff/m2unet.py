@@ -33,8 +33,8 @@ def blockdiag_matmul(x, weights):
     Reshape the result back to the original shape of x
     return result.reshape(*x.shape)
     """
-    if not x.shape[-1] == weights.shape[0] ** 2:
-        breakpoint()
+    # if not x.shape[-1] == weights.shape[0] ** 2:
+    #     breakpoint()
     return th.einsum(
         "bnm,...bm ->... bn",
         weights,
@@ -51,6 +51,7 @@ class MonarchMatrix(nn.Module):
         self.R = nn.Parameter(th.randn((sqrt_n, sqrt_n, sqrt_n)))
 
     def forward(self, x):
+        breakpoint()
         x = rearrange(x, "... (m n) -> ... (n m)", n=self.sqrt_n)
         x = blockdiag_matmul(x, self.L)
         x = rearrange(x, "... (m n) -> ... (n m)", n=self.sqrt_n)
@@ -241,7 +242,7 @@ class MonarchGatedConvDown(MonarchGatedConvBase):
         num_heads: int = 1,
         use_checkpoint: bool = False,
     ):
-        # 25x25b abnd 16x16
+        # 25x25 and 16x16
         sqrt_d = sqrt_n = 5 if level < 2 else 4
         super().__init__(
             level=level,
@@ -930,14 +931,14 @@ def main():
     #     **args_to_dict(args, model_and_diffusion_defaults().keys())
     # )
     # model.to(device)
-    x = th.randn(2, 3, 36, 36)
+    x = th.randn(2, 3, 16, 16)
     ### Matrix Test
-    # mm = MonarchMatrix(sqrt_n=8)
+    mm = MonarchMatrix(sqrt_n=4)
 
-    # x_h = mm.forward(x)
+    x = mm.forward(x)
     # print(x_h.shape)
 
-    # ### Model Test
+    # ### Modexl Test
     # sqrt_n = 6
     # sqrt_d = 6
     # model = MonarchMixerLayer(sqrt_n, sqrt_d)

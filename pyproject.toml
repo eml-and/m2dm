@@ -1,9 +1,9 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=61.0","torch==2.3.1"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["m2dm"]
+py-modules = ["mu2dm"]
 
 [tool.setuptools.packages]
 find = {}
@@ -17,7 +17,7 @@ authors = [
 ]
 description = "Research"
 readme = "README.md"
-requires-python = ">=3.11.7"
+requires-python = ">=3.10.14"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -25,15 +25,17 @@ classifiers = [
 ]
 
 dependencies = [
+  'blobfile == 2.1.1',
+  'einops == 0.8.0',
+  'fvcore ~= 0.1.5',
   'tqdm ~= 4.65.0',
   'pytest',
-  'torch == 2.1.2',
-  'torchvision == 0.16.2',
-  'denoising-diffusion-pytorch == 1.9.6',
+  'torch == 2.3.1',
+  'torchvision',
+  'torchaudio',
   'pytorch-fid == 0.3.0',
   'matplotlib',
   'black == 24.2.0',
-  'ijson == 3.1.4',
 ]
 
 [tool.isort]
