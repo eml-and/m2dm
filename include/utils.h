@@ -5,7 +5,13 @@
 #define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)  
 
 torch::Tensor blockdiag_matmul_fw_cu(
-    torch::Tensor x,
-    torch::Tensor LR
+    const torch::Tensor x,
+    const torch::Tensor LR
+);
+
+torch::Tensor blockdiag_matmul_bw_cu(
+    const torch::Tensor dL_dout,
+    const torch::Tensor x,
+    const   torch::Tensor LR
 );
 
