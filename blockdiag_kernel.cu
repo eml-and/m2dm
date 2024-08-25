@@ -4,34 +4,74 @@
 
 
 // FORWARD
+// __global__ void blockdiag_matmul_fw_kernel(
+//     const torch::PackedTensorAccessor<float, 5, torch::RestrictPtrTraits> x,
+//     const torch::PackedTensorAccessor<float, 3, torch::RestrictPtrTraits> weights,
+//     torch::PackedTensorAccessor<float, 5, torch::RestrictPtrTraits> out,
+//     int batch_size,
+//     int channels, 
+//     int n,
+//     int sqrt_n) {
+
+//     // Calculate the global indices
+//     const int batch_idx = blockIdx.x; // Batch index
+//     const int channel_idx = blockIdx.y; // Channel index
+//     const int block_idx = blockIdx.z; // Block index (in the n dimension)
+
+//     // Calculate the index within the block
+//     const int row = threadIdx.y;
+//     const int col = threadIdx.x;
+
+//     if (batch_idx < batch_size && channel_idx < channels && block_idx < n && row < sqrt_n && col < sqrt_n) {
+//         // bnk,...bk -> bn
+//         float value = 0.0f;
+//         for (int k = 0; k < sqrt_n; ++k) {
+//             value += weights[row][col][k] * x[batch_idx][channel_idx][block_idx][row][k];
+//         }
+
+//         out[batch_idx][channel_idx][block_idx][row][col] = value;
+//     }
+// }
 __global__ void blockdiag_matmul_fw_kernel(
-    const torch::PackedTensorAccessor<float, 5, torch::RestrictPtrTraits> x,
+    const torch::PackedTensorAccessor<float, 4, torch::RestrictPtrTraits> x, // 4D input tensor
     const torch::PackedTensorAccessor<float, 3, torch::RestrictPtrTraits> weights,
-    torch::PackedTensorAccessor<float, 5, torch::RestrictPtrTraits> out,
+    torch::PackedTensorAccessor<float, 4, torch::RestrictPtrTraits> out, // Now 4D output tensor
     int batch_size,
     int channels, 
     int n,
     int sqrt_n) {
 
     // Calculate the global indices
-    const int batch_idx = blockIdx.x; // Batch index
-    const int channel_idx = blockIdx.y; // Channel index
-    const int block_idx = blockIdx.z; // Block index (in the n dimension)
+    const int batch_idx = blockIdx.x;     // Batch index
+    const int channel_idx = blockIdx.y;   // Channel index
+    const int block_idx = blockIdx.z;     // Block index (in the n dimension)
 
     // Calculate the index within the block
     const int row = threadIdx.y;
     const int col = threadIdx.x;
 
     if (batch_idx < batch_size && channel_idx < channels && block_idx < n && row < sqrt_n && col < sqrt_n) {
-        // bnk,...bk -> bn
+        // Compute the flat index within the 4D input tensor
+        int flat_idx = row * sqrt_n + col;
+
+        // Access the appropriate element from the flattened input
         float value = 0.0f;
         for (int k = 0; k < sqrt_n; ++k) {
-            value += weights[row][col][k] * x[batch_idx][channel_idx][block_idx][row][k];
+            // Compute the flat index for the k-th element in the input
+            int input_flat_idx = row * sqrt_n + k;
+
+            // Multiply with the corresponding weight and accumulate the result
+            value += weights[row][col][k] * x[batch_idx][channel_idx][block_idx][input_flat_idx];
         }
 
-        out[batch_idx][channel_idx][block_idx][row][col] = value;
+        // Flatten the row and col indices into a single index for the output
+        int output_flat_idx = row * sqrt_n + col;
+
+        // Store the result in the 4D output tensor
+        out[batch_idx][channel_idx][block_idx][output_flat_idx] = value;
     }
 }
+
 
 
 torch::Tensor blockdiag_matmul_fw_cu(
@@ -51,9 +91,9 @@ torch::Tensor blockdiag_matmul_fw_cu(
     const dim3 blocks(batch_size, channels, n);  // Grid for batches, channels, and blocks
 
     blockdiag_matmul_fw_kernel<<<blocks, threads>>>(
-    x.packed_accessor<float, 5, torch::RestrictPtrTraits>(),
+    x.packed_accessor<float, 4, torch::RestrictPtrTraits>(),
     weights.packed_accessor<float, 3, torch::RestrictPtrTraits>(),
-    out.packed_accessor<float, 5, torch::RestrictPtrTraits>(),
+    out.packed_accessor<float, 4, torch::RestrictPtrTraits>(),
     batch_size,
     channels,
     n,

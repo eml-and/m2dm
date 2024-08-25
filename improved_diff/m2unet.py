@@ -6,6 +6,7 @@ import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+import cu_kernels as cu
 from fvcore.nn import FlopCountAnalysis, parameter_count_table
 
 from improved_diff import logger
@@ -42,6 +43,34 @@ def blockdiag_matmul(x, weights):
     ).reshape(*x.shape)
 
 
+class BlockMatmulCuda(th.autograd.Function):
+    """
+    torch wrapper for CUDA, replace the einsum with the CUDA kernel
+    """
+
+    @staticmethod
+    def forward(ctx, weights: th.tensor, x: th.tensor):
+        # x = x.contiguous()
+        # weights = weights.contiguous()
+        breakpoint()
+        out = cu.blockdiag_matmul_fw(
+            x.view(*x.shape[:-1], weights.shape[0], weights.shape[-1]), weights
+        )
+        breakpoint()
+        ctx.save_for_backward(x, weights)
+        return out
+
+    @staticmethod
+    def backward(ctx, dL_dout: th.tensor):
+        x, weights = ctx.saved_tensors
+        dL_dw = cu.blockdiag_matmul_bw(dL_dout.contiguous(), x, weights)
+        return dL_dw, None
+
+
+def block_matmul_cuda(x, weights):
+    return BlockMatmulCuda.apply(weights, x)
+
+
 class MonarchMatrix(nn.Module):
 
     def __init__(self, sqrt_n: int):
@@ -51,11 +80,10 @@ class MonarchMatrix(nn.Module):
         self.R = nn.Parameter(th.randn((sqrt_n, sqrt_n, sqrt_n)))
 
     def forward(self, x):
-        breakpoint()
         x = rearrange(x, "... (m n) -> ... (n m)", n=self.sqrt_n)
-        x = blockdiag_matmul(x, self.L)
+        x = block_matmul_cuda(x, self.L)
         x = rearrange(x, "... (m n) -> ... (n m)", n=self.sqrt_n)
-        x = blockdiag_matmul(x, self.R)
+        x = block_matmul_cuda(x, self.R)
         return rearrange(x, " ... (m n) -> ... (n m)", n=self.sqrt_n)
 
 
@@ -63,7 +91,7 @@ class MonarchMixerLayer(nn.Module):
     """
     Eq. 2 and Eq. 3 from the M2 paper,
     where
-    Eq. 2: convolution wit kernel
+    Eq. 2: convolution with kernel
     Eq. 3: MLP with monarch matrices
     Processes input sequences of embeddings (b,n,d)
     """
@@ -182,7 +210,6 @@ class GatedConvBlock(nn.Module):
 class MonarchGatedConvBase(nn.Module):
     def __init__(
         self,
-        level: int,
         res: bool,
         channels: int,
         sqrt_d: int = 6,
@@ -215,7 +242,6 @@ class MonarchGatedConvBase(nn.Module):
     def _forward(self, x):
         shape = x.shape
         qkv = th.cat(self.num_heads * [x], dim=1)
-        # check if this works
         qkv = self.norm(qkv)
         Q = self.q(qkv)
         K = self.k(qkv)
@@ -245,7 +271,6 @@ class MonarchGatedConvDown(MonarchGatedConvBase):
         # 25x25 and 16x16
         sqrt_d = sqrt_n = 5 if level < 2 else 4
         super().__init__(
-            level=level,
             res=res,
             channels=channels,
             num_heads=num_heads,
@@ -267,7 +292,6 @@ class MonarchGatedConvMiddle(MonarchGatedConvBase):
         # throught the 9x9 bottleneck
         sqrt_d = sqrt_n = 3
         super().__init__(
-            level=level,
             res=res,
             channels=channels,
             num_heads=num_heads,
@@ -290,7 +314,6 @@ class MonarchGatedConvUp(MonarchGatedConvBase):
         # we are twice on level 2 and twice on level 1
         sqrt_d = sqrt_n = 4 if level > 1 else 5
         super().__init__(
-            level=level,
             res=res,
             channels=channels,
             num_heads=num_heads,
