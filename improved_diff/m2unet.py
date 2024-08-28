@@ -53,6 +53,7 @@ class BlockMatmulCuda(th.autograd.Function):
         # x = x.contiguous()
         # weights = weights.contiguous()
         breakpoint()
+        # TODO: RuntimeError: TensorAccessor expected 4 dims but tensor has 5
         out = cu.blockdiag_matmul_fw(
             x.view(*x.shape[:-1], weights.shape[0], weights.shape[-1]), weights
         )

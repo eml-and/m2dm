@@ -110,8 +110,8 @@ torch::Tensor blockdiag_matmul_fw_cu(
 
 // BACKWARD
 __global__ void blockdiag_matmul_bw_kernel(
-    const torch::PackedTensorAccessor<float, 5, torch::RestrictPtrTraits> dL_dout,
-    const torch::PackedTensorAccessor<float, 5, torch::RestrictPtrTraits> x,
+    const torch::PackedTensorAccessor<float, 4, torch::RestrictPtrTraits> dL_dout,
+    const torch::PackedTensorAccessor<float, 4, torch::RestrictPtrTraits> x,
     torch::PackedTensorAccessor<float, 3, torch::RestrictPtrTraits> dL_dw, // same shape as weights
     int batch_size,
     int channels, 
@@ -155,8 +155,8 @@ torch::Tensor blockdiag_matmul_bw_cu(
     const dim3 blocks(batch_size, channels, n);  // Grid for batches, channels, and blocks
 
     blockdiag_matmul_bw_kernel<<<blocks, threads>>>(
-    dL_dout.packed_accessor<float, 5, torch::RestrictPtrTraits>(),
-    x.packed_accessor<float, 5, torch::RestrictPtrTraits>(),
+    dL_dout.packed_accessor<float, 4, torch::RestrictPtrTraits>(),
+    x.packed_accessor<float, 4, torch::RestrictPtrTraits>(),
     dL_dw.packed_accessor<float, 3, torch::RestrictPtrTraits>(),
     batch_size,
     channels,
