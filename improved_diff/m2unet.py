@@ -45,19 +45,17 @@ def blockdiag_matmul(x, weights):
 
 class BlockMatmulCuda(th.autograd.Function):
     """
-    torch wrapper for CUDA, replace the einsum with the CUDA kernel
+    torch wrapper for CUDA, replace the einsum notation with the CUDA kernel
     """
 
     @staticmethod
     def forward(ctx, weights: th.tensor, x: th.tensor):
         # x = x.contiguous()
         # weights = weights.contiguous()
-        breakpoint()
-        # TODO: RuntimeError: TensorAccessor expected 4 dims but tensor has 5
-        out = cu.blockdiag_matmul_fw(
-            x.view(*x.shape[:-1], weights.shape[0], weights.shape[-1]), weights
-        )
-        breakpoint()
+        out = cu.blockdiag_matmul_fw(x, weights)
+        # out = cu.blockdiag_matmul_fw(
+        #     x.view(*x.shape[:-1], weights.shape[0], weights.shape[-1]), weights
+        # )
         ctx.save_for_backward(x, weights)
         return out
 
@@ -73,6 +71,7 @@ def block_matmul_cuda(x, weights):
 
 
 class MonarchMatrix(nn.Module):
+    """From their monarch mixer paper"""
 
     def __init__(self, sqrt_n: int):
         super().__init__()
@@ -151,10 +150,7 @@ class MonarchLinear(nn.Module):
         self.layer_norm = nn.LayerNorm(sqrt_d**2)
 
     def forward(self, x):
-        try:
-            output = self.m4(self.m3(x))
-        except Exception:
-            breakpoint()
+        output = self.m4(self.m3(x))
         return self.layer_norm(output)
 
 
